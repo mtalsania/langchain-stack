@@ -63,6 +63,26 @@ Issues live under [GitHub milestones](https://github.com/mtalsania/langchain-sta
   cp .env.example .env   # fill in the keys
   ```
 
+## M0: the data core (no LLM)
+
+```bash
+python -m core.demo NVDA              # 3-year table of ~15 metrics, each with its 10-K accession
+python -m core.demo AAPL --sections   # also cut Items 1, 1A, 7 out of the latest 10-K
+pytest                                # offline logic tests
+pytest --live                         # checks exact figures against the live SEC APIs
+```
+
+| Module | What it does |
+|---|---|
+| `core/sec_client.py` | User-Agent from `SEC_USER_AGENT`, at most 10 requests/second, retries on 429/5xx, disk cache in `.cache/sec` |
+| `core/tickers.py` | Ticker to CIK from the SEC's `company_tickers.json` |
+| `core/xbrl.py` | Companyfacts loader. One value per fiscal year: full-year periods only, labelled by the company's own fiscal calendar, latest filing wins, accession kept |
+| `core/metrics.py` | ~15 metrics with tag variants (e.g. `Revenues` vs `RevenueFromContractWithCustomerExcludingAssessedTax`), plus margins, FCF and total debt |
+| `core/filings.py` | Latest 10-K from the submissions API; extracts Item 1, 1A, 7 and skips the table of contents |
+
+GitHub Actions runs the offline tests on every push. Add a repository secret named `SEC_USER_AGENT`
+and it runs the live tests too.
+
 ## Data sources
 
 All public, all free:
