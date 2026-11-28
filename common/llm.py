@@ -68,3 +68,29 @@ def get_llm(temperature: float = 0.0, small: bool = False, **kwargs) -> BaseChat
 
         return ChatOllama(model=model, temperature=temperature, **kwargs)
     raise ValueError(f"Unknown PROVIDER={provider!r}. Use groq, gemini or ollama.")
+
+
+# ---------------------------------------------------------------- resilience ----
+def is_retryable(exc: Exception) -> bool:
+    """Errors worth another try on the free tier.
+
+    - Groq "output_parse_failed": gpt-oss sometimes emits a malformed tool call
+      (its reasoning text, e.g. "Return value.", instead of the call). A retry usually works.
+    - Rate limits and 5xx.
+    """
+    text = str(exc)
+    status = getattr(exc, "status_code", None)
+    return "output_parse_failed" in text or status == 429 or (status is not None and status >= 500)
+
+
+def resilient_middleware(fallback_to_large: bool = True) -> list:
+    """Agent middleware: retry flaky calls, then fall back to the large model.
+
+    This is LangChain middleware doing what you'd otherwise hand-write around every
+    model call. Order matters: the first entry wraps the rest, so the fallback only
+    kicks in after the retries are used up.
+    """
+    from langchain.agents.middleware import ModelFallbackMiddleware, ModelRetryMiddleware
+
+    retry = ModelRetryMiddleware(max_retries=2, retry_on=is_retryable, on_failure="error", initial_delay=2.0)
+    return [ModelFallbackMiddleware(get_llm()), retry] if fallback_to_large else [retry]

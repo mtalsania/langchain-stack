@@ -25,7 +25,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from pydantic import BaseModel, Field
 
-from common.llm import get_llm
+from common.llm import get_llm, resilient_middleware
 from tools.financials import LABELS, company_facts, get_metric, list_fiscal_years
 
 TICKERS = ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL"]
@@ -73,6 +73,9 @@ def make_agent():
         # ToolStrategy: the final answer is returned as a tool call. The default for a bare
         # schema uses the provider's JSON mode, and Groq rejects JSON mode combined with tools.
         response_format=ToolStrategy(NumericAnswer),
+        # gpt-oss-20b on Groq sometimes returns a malformed tool call ("output_parse_failed").
+        # Retry it twice, then fall back to the large model for that step.
+        middleware=resilient_middleware(),
     )
 
 

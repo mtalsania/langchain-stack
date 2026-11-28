@@ -173,8 +173,57 @@ def test_eval_agent_never_sends_json_mode_with_tools(monkeypatch):
         raise RuntimeError("stop before the network")
 
     model.client.create = capture
-    monkeypatch.setattr(xbrl_qa, "get_llm", lambda small=False: model)
+    import common.llm as llm
+
+    monkeypatch.setattr(xbrl_qa, "get_llm", lambda **kw: model)
+    monkeypatch.setattr(llm, "get_llm", lambda **kw: model)  # the fallback model too
     with pytest.raises(RuntimeError):
         xbrl_qa.make_agent().invoke({"messages": [("user", "AAPL revenue FY2024?")]})
     assert "response_format" not in sent[0]
     assert "NumericAnswer" in [t["function"]["name"] for t in sent[0]["tools"]]
+
+
+class ParseFailed(Exception):
+    """Same text Groq returns when gpt-oss emits a malformed tool call."""
+
+    def __init__(self):
+        super().__init__("Error code: 400 - {'error': {'code': 'output_parse_failed', 'failed_generation': 'Return value.'}}")
+
+
+def test_flaky_small_model_is_retried_then_falls_back_to_large(monkeypatch):
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+
+    import common.llm as llm
+
+    calls = []
+
+    class Flaky(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+        def _generate(self, *a, **kw):
+            calls.append(1)
+            raise ParseFailed()
+
+    class Good(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+    answer = AIMessage("", tool_calls=[{"name": "NumericAnswer", "id": "c1",
+                                        "args": {"value": 391035000000.0, "unit": "USD", "accession": "accn-fy2024"}}])
+    small_model, large_model = Flaky(responses=[AIMessage("x")]), Good(responses=[answer])
+    monkeypatch.setattr(llm, "get_llm", lambda **kw: large_model)
+    monkeypatch.setattr(xbrl_qa, "get_llm", lambda **kw: small_model)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    out = xbrl_qa.target({"question": "AAPL revenue FY2024?"}, xbrl_qa.make_agent())
+    assert out["value"] == 391035000000.0
+    assert len(calls) == 3  # first try + 2 retries, then the large model answered
+
+
+def test_only_flaky_errors_are_retried():
+    from common.llm import is_retryable
+
+    assert is_retryable(ParseFailed())
+    assert not is_retryable(ValueError("json mode cannot be combined with tool/function calling"))
