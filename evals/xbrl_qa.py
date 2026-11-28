@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 
 from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
 from pydantic import BaseModel, Field
 
 from common.llm import get_llm, resilient_middleware
@@ -55,35 +55,69 @@ def build_examples(tickers=TICKERS, metrics=QA_METRICS) -> list[dict]:
 
 
 class NumericAnswer(BaseModel):
-    value: float = Field(description="The number in base units: dollars (not millions), or a 0-1 ratio")
+    value: float | None = Field(description="The number in base units: dollars (not millions), or a 0-1 ratio")
     unit: str = Field(description="USD, ratio, or USD/shares")
     accession: str = Field(description="10-K accession number the value came from, e.g. 0001045810-25-000023")
 
 
 SYSTEM = """You answer questions about public companies' reported financials.
 Always call get_metric to get the exact value; never estimate. Use list_fiscal_years if unsure
-which years exist. Report the value exactly as returned, in base units, with its accession."""
+which years exist. Then answer in ONE plain sentence with the full number in base units
+(e.g. $120,067,000,000, not $120B) and the accession, e.g.
+"NVIDIA's revenue for fiscal year 2026 was $215,938,000,000 (accession 0001045810-26-000021)."
+"""
 
 
 def make_agent():
+    # No response_format on purpose. Structured output inside a tool-calling agent forces
+    # tool_choice=required on Groq, and gpt-oss often answers in plain text instead, which
+    # Groq rejects with 400 'tool_use_failed'. The model answers in text; parse_answer reads it.
     return create_agent(
         model=get_llm(small=True),
         tools=[get_metric, list_fiscal_years],
         system_prompt=SYSTEM,
-        # ToolStrategy: the final answer is returned as a tool call. The default for a bare
-        # schema uses the provider's JSON mode, and Groq rejects JSON mode combined with tools.
-        response_format=ToolStrategy(NumericAnswer),
         # gpt-oss-20b on Groq sometimes returns a malformed tool call ("output_parse_failed").
         # Retry it twice, then fall back to the large model for that step.
         middleware=resilient_middleware(),
     )
 
 
+ACCESSION = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
+NUMBER = re.compile(r"(-?\$?\s?-?\d[\d,]*(?:\.\d+)?)\s*(trillion|billion|million|thousand|bn|[TBMK]\b)?", re.I)
+SCALE = {"trillion": 1e12, "t": 1e12, "billion": 1e9, "bn": 1e9, "b": 1e9, "million": 1e6, "m": 1e6,
+         "thousand": 1e3, "k": 1e3}
+
+
+def parse_answer(text: str) -> NumericAnswer:
+    """Read the value and accession out of the agent's sentence. Plain code, no extra model call.
+
+    The accession is removed first so its digits are not mistaken for the value, and
+    4-digit years are skipped. The largest remaining number is the answer.
+    """
+    accn = ACCESSION.search(text)
+    rest = ACCESSION.sub(" ", text)
+    best = None
+    for m in NUMBER.finditer(rest):
+        raw, scale = m.group(1).replace("$", "").replace(",", "").replace(" ", ""), (m.group(2) or "").lower()
+        try:
+            v = float(raw)
+        except ValueError:
+            continue
+        if not scale and re.fullmatch(r"(19|20)\d\d", raw):
+            continue  # a fiscal year, not the answer
+        v *= SCALE.get(scale, 1)
+        if best is None or abs(v) > abs(best):
+            best = v
+    return NumericAnswer(value=best, unit="USD", accession=accn.group(0) if accn else "")
+
+
 def target(inputs: dict, agent=None) -> dict:
     agent = agent or make_agent()
     result = agent.invoke({"messages": [("user", inputs["question"])]})
-    ans: NumericAnswer = result["structured_response"]
-    return ans.model_dump()
+    final = result["messages"][-1].content
+    if isinstance(final, list):  # some providers return content blocks
+        final = " ".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in final)
+    return {**parse_answer(final).model_dump(), "answer_text": final}
 
 
 # ------------------------------------------------------------ evaluators ----

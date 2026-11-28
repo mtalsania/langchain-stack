@@ -180,7 +180,17 @@ def test_eval_agent_never_sends_json_mode_with_tools(monkeypatch):
     with pytest.raises(RuntimeError):
         xbrl_qa.make_agent().invoke({"messages": [("user", "AAPL revenue FY2024?")]})
     assert "response_format" not in sent[0]
-    assert "NumericAnswer" in [t["function"]["name"] for t in sent[0]["tools"]]
+    # forcing a tool call makes Groq reject plain-text answers ('tool_use_failed')
+    assert sent[0].get("tool_choice") in (None, "auto")
+    assert {t["function"]["name"] for t in sent[0]["tools"]} == {"get_metric", "list_fiscal_years"}
+
+
+def test_answer_sentence_is_parsed_without_a_model():
+    out = xbrl_qa.parse_answer("NVIDIA's net income for fiscal year 2026 was **$120,067,000,000 USD** "
+                               "(accession 0001045810-26-000021).")
+    assert out.value == 120_067_000_000 and out.accession == "0001045810-26-000021"
+    assert xbrl_qa.parse_answer("Revenue in FY2024 was $391.04 billion (0000320193-24-000123).").value == 391.04e9
+    assert xbrl_qa.parse_answer("I could not find it.").value is None
 
 
 class ParseFailed(Exception):
@@ -210,15 +220,14 @@ def test_flaky_small_model_is_retried_then_falls_back_to_large(monkeypatch):
         def bind_tools(self, tools, **kw):
             return self
 
-    answer = AIMessage("", tool_calls=[{"name": "NumericAnswer", "id": "c1",
-                                        "args": {"value": 391035000000.0, "unit": "USD", "accession": "accn-fy2024"}}])
+    answer = AIMessage("Apple's revenue for fiscal year 2024 was $391,035,000,000 (accession 0000320193-24-000123).")
     small_model, large_model = Flaky(responses=[AIMessage("x")]), Good(responses=[answer])
     monkeypatch.setattr(llm, "get_llm", lambda **kw: large_model)
     monkeypatch.setattr(xbrl_qa, "get_llm", lambda **kw: small_model)
     monkeypatch.setattr("time.sleep", lambda s: None)
 
     out = xbrl_qa.target({"question": "AAPL revenue FY2024?"}, xbrl_qa.make_agent())
-    assert out["value"] == 391035000000.0
+    assert out["value"] == 391035000000.0 and out["accession"] == "0000320193-24-000123"
     assert len(calls) == 3  # first try + 2 retries, then the large model answered
 
 
