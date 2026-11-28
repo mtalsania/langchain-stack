@@ -18,15 +18,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install requests beautifulsoup4 lxml python-dotenv pytest langchain langchain-core langchain-text-splitters langgraph langchain-groq langsmith numpy
+      - run: pip install requests beautifulsoup4 lxml python-dotenv pytest langchain langchain-core langchain-text-splitters langgraph langchain-groq langsmith numpy fastembed
       - name: Offline tests
         run: pytest
       - uses: actions/cache@v4
         if: ${{ env.SEC_USER_AGENT != '' }}
         with:
-          path: .cache/sec
+          path: |
+            .cache/sec
+            .cache/fastembed
           key: sec-${{ github.run_id }}
           restore-keys: sec-
       - name: Live SEC tests
         if: ${{ env.SEC_USER_AGENT != '' }}
         run: pytest --live -v && python -m core.demo NVDA --sections
+      - name: M2 risk diff, no model calls
+        if: ${{ env.SEC_USER_AGENT != '' }}
+        env:
+          FASTEMBED_CACHE_PATH: .cache/fastembed
+        run: |
+          python -m scripts.risk_diagnostics NVDA AAPL MSFT AMZN GOOGL
+          python -m graphs.risk_changes NVDA AAPL MSFT AMZN GOOGL --no-llm || true

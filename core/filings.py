@@ -64,6 +64,14 @@ def list_filings(cik: int, forms: tuple[str, ...] = ("10-K",), client: SECClient
     return [f for f in parse_submissions(data) if f.form in forms]
 
 
+def recent_10ks(cik: int, n: int = 2, client: SECClient | None = None) -> list[Filing]:
+    """The n most recent 10-Ks, newest first (amendments, 10-K/A, are left out)."""
+    filings = list_filings(cik, ("10-K",), client)[:n]
+    if len(filings) < n:
+        raise LookupError(f"CIK {cik} has {len(filings)} 10-K(s) among its recent filings; need {n}")
+    return filings
+
+
 def latest_10k(cik: int, client: SECClient | None = None) -> Filing:
     filings = list_filings(cik, ("10-K",), client)
     if not filings:
@@ -76,8 +84,53 @@ def latest_10k(cik: int, client: SECClient | None = None) -> Filing:
 _BLOCK_TAGS = ["p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "section"]
 
 
-def html_to_text(html: str) -> str:
-    """Plain text with one line per block element, so headings land on their own line."""
+# Emphasis markers (only with mark_emphasis=True). Risk factor headings are styled
+# (bold, italic, underlined) and their bodies are not, so core.risk_factors needs to
+# know which text was emphasized. A marked run looks like  \x01<style char>text\x02,
+# where the style char is chr(STYLE_BASE + bits) with bold=1, italic=2, underline=4.
+EMPH_OPEN, EMPH_CLOSE, STYLE_BASE = "\x01", "\x02", 0xE000
+BOLD, ITALIC, UNDERLINE = 1, 2, 4
+
+_WEIGHT = re.compile(r"font-weight\s*:\s*(bold|bolder|[6-9]00)", re.I)
+_WEIGHT_NORMAL = re.compile(r"font-weight\s*:\s*(normal|lighter|[1-5]00)", re.I)
+_ITALIC = re.compile(r"font-style\s*:\s*(italic|oblique)", re.I)
+_ITALIC_NORMAL = re.compile(r"font-style\s*:\s*normal", re.I)
+_UNDER = re.compile(r"text-decoration[^:;]*:\s*[^;]*underline", re.I)
+
+
+def _style_bits(node, stop) -> int:
+    """Bold/italic/underline of a text node: the nearest ancestor that sets a property decides."""
+    weight = italic = under = None
+    el = node.parent
+    while el is not None and el is not stop:
+        name = (el.name or "").lower()
+        style = el.get("style", "") if hasattr(el, "get") else ""
+        if weight is None:
+            if name in ("b", "strong") or _WEIGHT.search(style):
+                weight = True
+            elif _WEIGHT_NORMAL.search(style):
+                weight = False
+        if italic is None:
+            if name in ("i", "em") or _ITALIC.search(style):
+                italic = True
+            elif _ITALIC_NORMAL.search(style):
+                italic = False
+        if under is None and (name == "u" or _UNDER.search(style)):
+            under = True
+        el = el.parent
+    return (BOLD if weight else 0) | (ITALIC if italic else 0) | (UNDERLINE if under else 0)
+
+
+def strip_marks(text: str) -> str:
+    return re.sub(f"{EMPH_OPEN}.|{EMPH_CLOSE}", "", text, flags=re.S)
+
+
+def html_to_text(html: str, mark_emphasis: bool = False) -> str:
+    """Plain text with one line per block element, so headings land on their own line.
+
+    mark_emphasis=True wraps bold/italic/underlined runs in markers (see EMPH_OPEN);
+    strip_marks() of that output equals the unmarked text, line for line.
+    """
     # Inline-XBRL 10-Ks start with an XML declaration; they still parse correctly as HTML.
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
@@ -87,17 +140,26 @@ def html_to_text(html: str) -> str:
     # Inline XBRL keeps its hidden metadata in <ix:header>; it is not part of the text.
     for t in soup.find_all(re.compile(r"^ix:header$", re.I)):
         t.decompose()
+    if mark_emphasis:
+        for s in list(soup.find_all(string=True)):
+            if not s.strip():
+                continue
+            bits = _style_bits(s, None)
+            if bits:
+                s.replace_with(f"{EMPH_OPEN}{chr(STYLE_BASE + bits)}{s}{EMPH_CLOSE}")
     for t in soup.find_all(_BLOCK_TAGS):
         t.insert_after("\n")
     for t in soup.find_all(["td", "th"]):
         t.insert_after(" ")
     text = soup.get_text()
-    text = text.replace("\xa0", " ").replace("​", "")
+    text = text.replace("\xa0", " ").replace("\u200b", "")
     lines = [re.sub(r"[ \t\r\f\v]+", " ", ln).strip() for ln in text.split("\n")]
     out: list[str] = []
     for ln in lines:
-        if ln or (out and out[-1]):
-            out.append(ln)
+        if strip_marks(ln).strip() or (out and strip_marks(out[-1]).strip()):
+            out.append(ln if strip_marks(ln).strip() else "")
+    while out and not out[-1]:
+        out.pop()
     return "\n".join(out).strip()
 
 
@@ -130,10 +192,9 @@ def _heading_positions(lines: list[str]) -> dict[str, list[int]]:
     return pos
 
 
-def extract_section(text: str, item: str) -> str:
-    """Return the text of one 10-K item (heading included), or "" if not found."""
+def section_bounds(lines: list[str], item: str) -> tuple[int, int] | None:
+    """(first line, end line) of one 10-K item in a list of lines, or None if not found."""
     item = item.upper()
-    lines = text.split("\n")
     pos = _heading_positions(lines)
     later = ITEM_ORDER[ITEM_ORDER.index(item) + 1:]
     later_starts = sorted(p for it in later for p in pos[it])
@@ -144,9 +205,16 @@ def extract_section(text: str, item: str) -> str:
         size = sum(len(ln) for ln in lines[start:end])
         if size > best[0]:
             best = (size, start, end)
-    if best[1] is None:
+    return None if best[1] is None else (best[1], best[2])
+
+
+def extract_section(text: str, item: str) -> str:
+    """Return the text of one 10-K item (heading included), or "" if not found."""
+    lines = text.split("\n")
+    bounds = section_bounds(lines, item)
+    if bounds is None:
         return ""
-    return "\n".join(lines[best[1]:best[2]]).strip()
+    return "\n".join(lines[bounds[0]:bounds[1]]).strip()
 
 
 def extract_sections(text: str, items: tuple[str, ...] = ("1", "1A", "7")) -> dict[str, str]:
