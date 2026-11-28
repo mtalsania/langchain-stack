@@ -112,15 +112,44 @@ def heading_style(lines: list[_Line]) -> int | None:
     return counts.most_common(1)[0][0] if counts else None
 
 
+# Page furniture that print-formatted 10-Ks repeat on every page.
+_ARTIFACT = re.compile(r"^(\d{1,3}|page \d+|table of contents|part i{1,3}|item 1a\.?(\s*risk factors)?|"
+                       r".{0,80}\|\s*(20\d\d\s*)?form 10-k\s*\|\s*\d{1,3})$", re.I)
+_CATEGORY = re.compile(r"^(risks?\b|general risk)", re.I)
+_SHORT_CATEGORY = re.compile(r"\brisks( factors)?$", re.I)  # "Operating Risks", "Legal and Regulatory Risks"
+_CONTINUES = re.compile(r"\b(to|and|or|of|the|a|an|in|on|for|our|with|by|that|its)$", re.I)
+
+
+def _is_label(ln: _Line) -> bool:
+    return ln.style is not None and ln.words <= CATEGORY_MAX_WORDS and not ln.text.endswith(".")
+
+
 def _is_category(ln: _Line, hstyle: int, next_ln: _Line | None) -> bool:
-    if ln.words > CATEGORY_MAX_WORDS or ln.text.endswith("."):
+    """A short emphasized label that introduces a group of risks.
+
+    Short emphasized lines that are followed by body text are sub-headings inside a
+    risk (Microsoft uses these) and stay in that risk's body.
+    """
+    if not _is_label(ln):
         return False
-    if ln.style != hstyle:
+    if _CATEGORY.search(ln.text) or (_SHORT_CATEGORY.search(ln.text) and ln.words <= 6):
         return True
-    # Same style as headings: a category only if a heading follows straight away, and
-    # that next line is not the rest of this one (a heading wrapped onto two lines).
-    return (next_ln is not None and next_ln.style == hstyle
-            and not next_ln.text[:1].islower() and not re.search(r"\b(to|and|or|of|the|a|in|on|for|our)$", ln.text))
+    if next_ln is None or next_ln.style != hstyle:
+        return False
+    # The next line is heading-styled: a category, unless this line is the first half of a wrapped heading.
+    return ln.style != hstyle or (not next_ln.text[:1].islower() and not _CONTINUES.search(ln.text))
+
+
+def _is_heading_like(ln: _Line) -> bool:
+    return ln.text.endswith(".") or ln.words > CATEGORY_MAX_WORDS
+
+
+def _append_body(body: list[str], text: str) -> None:
+    # A paragraph cut by a page break continues in lower case: glue it back together.
+    if body and text[:1].islower() and not re.search(r"[.:;!?\"\u201d)]$", body[-1]):
+        body[-1] += " " + text
+    else:
+        body.append(text)
 
 
 def split_risks(marked_section: str) -> tuple[list[RiskFactor], list[str]]:
@@ -129,6 +158,7 @@ def split_risks(marked_section: str) -> tuple[list[RiskFactor], list[str]]:
     lines = [_parse_line(ln) for ln in raw]
     if lines and re.match(r"^\s*item\s*1a", lines[0].text, re.I):
         lines = lines[1:]  # the "Item 1A. Risk Factors" heading itself
+    lines = [ln for ln in lines if not _ARTIFACT.match(ln.text)]
     hstyle = heading_style(lines)
     if hstyle is None:
         return [], ["no emphasized headings found in Item 1A"]
@@ -144,26 +174,34 @@ def split_risks(marked_section: str) -> tuple[list[RiskFactor], list[str]]:
 
     for i, ln in enumerate(lines):
         nxt = lines[i + 1] if i + 1 < len(lines) else None
-        if ln.style is not None and _is_category(ln, hstyle, nxt):
-            category, cur = ln.text, None
-            in_summary = in_summary or bool(_SUMMARY.search(ln.text))  # categories inside a summary don't end it
+        if _is_label(ln) and _SUMMARY.search(ln.text):
+            in_summary, cur, category = True, None, ln.text
             continue
-        if ln.style == hstyle:
-            if _SUMMARY.search(ln.text) and ln.words <= CATEGORY_MAX_WORDS:
-                in_summary, cur = True, None
+        if in_summary:
+            # A summary lists category labels and short bullets. It ends at the first real
+            # heading: a heading-styled sentence, or a heading followed by a full paragraph.
+            real = (ln.style == hstyle and (_is_heading_like(ln) or (nxt is not None and nxt.style is None
+                                                                     and nxt.words > 40))) \
+                or (ln.lead_style == hstyle and len(ln.lead) >= RUN_IN_MIN_CHARS)
+            if not real:
+                if _is_label(ln):
+                    category = ln.text
                 continue
             in_summary = False
+        if _is_category(ln, hstyle, nxt):
+            category, cur = ln.text, None
+            continue
+        if ln.style == hstyle:
             if cur is not None and not cur["body"]:  # heading continues on the next line
                 cur["heading"] += " " + ln.text
             else:
                 cur = start(ln.text)
             continue
         if ln.lead_style == hstyle and len(ln.lead) >= RUN_IN_MIN_CHARS:
-            in_summary = False
             cur = start(ln.lead, ln.rest)
             continue
-        if cur is not None and not in_summary:
-            cur["body"].append(ln.text)
+        if cur is not None:
+            _append_body(cur["body"], ln.text)
 
     out = []
     for r in risks:

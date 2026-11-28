@@ -209,3 +209,39 @@ def test_no_llm_mode_makes_no_model_calls(fake_company, monkeypatch):
     monkeypatch.setattr(rc, "get_llm", lambda **kw: (_ for _ in ()).throw(AssertionError("model called")))
     r = rc.graph.invoke({"tickers": ["EXM"], "no_llm": True})["reports"][0]
     assert r["counts"]["unjudged"] == 1 and r["counts"]["new"] == 1
+
+
+def test_page_furniture_is_dropped_and_page_breaks_rejoined():
+    layout = [("h", "Competition could adversely impact our market share and financial results."),
+              ("p", "Our competitors include large companies that may have greater resources and"),
+              ("p", "29"), ("p", "Table of Contents"), ("p", "Example Corp | 2026 Form 10-K | 12"),
+              ("p", "longer operating histories than we do."),
+              ("h", "Adverse economic conditions may harm our business."), ("p", BODY)]
+    risks, _ = split_risks(section_of(risk_html(layout)))
+    assert risks[0].body == ("Our competitors include large companies that may have greater resources and "
+                             "longer operating histories than we do.")
+
+
+def test_sub_headings_inside_a_risk_stay_in_its_body():
+    # Microsoft-style: short italic labels inside a risk, followed by body text.
+    layout = [("c", "STRATEGIC RISKS"),
+              ("h", "We face intense competition across all markets for our products and services."),
+              ("raw", f'<span {B}>Business model competition</span>'), ("p", BODY),
+              ("h", "Our cloud strategy requires substantial investments."), ("p", BODY)]
+    html = risk_html([], heading_style=I, extra="".join(
+        f"<div><span {B}>{t}</span></div>" if k == "c" else f"<div><span {I}>{t}</span></div>" if k == "h"
+        else f"<div>{t}</div>" if k == "raw" else f"<div><span>{t}</span></div>" for k, t in layout))
+    risks, _ = split_risks(section_of(html))
+    assert [r.heading[:20] for r in risks] == ["We face intense comp", "Our cloud strategy r"]
+    assert risks[0].body.startswith("Business model competition") and risks[0].category == "STRATEGIC RISKS"
+
+
+def test_summary_with_heading_styled_categories_is_skipped():
+    # NVIDIA-style: the summary's category labels use the same style as the real headings.
+    layout = [("h", "Risk Factors Summary"), ("p", "Our business faces these risks:"),
+              ("h", "Risks Related to Our Industry and Markets"), ("p", "Failure to meet the evolving needs of our industry."),
+              ("h", "Risks Related to Our Industry and Markets"),
+              ("h", "Failure to meet the evolving needs of our industry may adversely impact our results."), ("p", BODY)]
+    risks, _ = split_risks(section_of(risk_html(layout, heading_style=B)))
+    assert [r.heading for r in risks] == ["Failure to meet the evolving needs of our industry may adversely impact our results."]
+    assert risks[0].category == "Risks Related to Our Industry and Markets"

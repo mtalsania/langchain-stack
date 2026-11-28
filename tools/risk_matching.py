@@ -32,7 +32,7 @@ REORG_OVERLAP = 0.5
 SHINGLE = 6
 MIN_CHANGED_WORDS = 4  # fewer changed words than this (or only numbers) = unchanged
 MAX_HUNKS = 6
-MAX_HUNK_CHARS = 700
+MAX_HUNK_CHARS = 450  # per side; keeps judge prompts inside the free-tier token budget
 
 _QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-",
                          "­": None, " ": " "})

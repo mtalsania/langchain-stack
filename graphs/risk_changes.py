@@ -42,8 +42,9 @@ from core.risk_factors import risk_sections_two_years
 from core.tickers import lookup
 from tools.risk_matching import Pair, contains_quote, match_risks, overlap, shingles
 
-BATCH_CHARS = 6000  # diff text per judge call: ~1.5K tokens in, well under Groq's 8K tokens/minute
-BATCH_PAIRS = 6
+BATCH_CHARS = 7000  # diff text per judge call: ~1.8K tokens in, well under Groq's 8K tokens/minute
+BATCH_PAIRS = 5
+MAX_HUNKS_SHOWN = 4  # the biggest changes in a pair; the rest are counted, not shown
 
 
 # ----------------------------------------------------------------- state ----
@@ -126,7 +127,7 @@ def match(state: CompanyState) -> dict:
 
 def pair_prompt(p: dict) -> str:
     lines = [f"### {p['id']}", f"BEFORE heading: {p['prior']['heading']}", f"NOW heading: {p['current']['heading']}"]
-    hunks = p["hunks"][:6]
+    hunks = sorted(p["hunks"], key=lambda h: -h["changed_words"])[:MAX_HUNKS_SHOWN]
     for k, h in enumerate(hunks, 1):
         lines += [f"Change {k} BEFORE: {h['before'] or '(nothing)'}", f"Change {k} NOW: {h['after'] or '(nothing)'}"]
     if len(p["hunks"]) > len(hunks):
