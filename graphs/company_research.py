@@ -26,7 +26,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
-from common.llm import get_llm
+from common.llm import get_llm, structured
 from tools.filing_search import search
 from tools.financials import LABELS, archive_url, company_facts, facts_prompt_table, format_value
 
@@ -48,9 +48,8 @@ class ResearchState(TypedDict, total=False):
 class ResearchPlan(BaseModel):
     queries: list[str] = Field(
         description="3 to 4 short search queries for the 10-K text: what drove results, "
-        "segments/products, strategy and priorities, biggest risks",
-        min_length=1,
-        max_length=4,
+        "segments/products, strategy and priorities, biggest risks"
+        # no min/max length: Groq's strict schema mode does not accept them; plan() keeps the first 4
     )
 
 
@@ -75,7 +74,7 @@ def fetch_numbers(state: ResearchState) -> dict:
 def plan(state: ResearchState) -> dict:
     snap = state["snapshot"]
     focus = state.get("focus") or "a general research brief"
-    planner = get_llm(small=True).with_structured_output(ResearchPlan)
+    planner = structured(get_llm(small=True), ResearchPlan)
     result = planner.invoke(
         f"You are planning research on {snap['name']} ({snap['ticker']}) from its latest 10-K. "
         f"Focus: {focus}. Write 3-4 search queries for the filing text."
@@ -117,7 +116,7 @@ def write(state: ResearchState) -> dict:
         f"FIGURES (placeholder = value):\n{facts_prompt_table(snap)}\n\n"
         f"PASSAGES:\n{passages}"
     )
-    writer = get_llm().with_structured_output(CompanyBrief)
+    writer = structured(get_llm(), CompanyBrief)
     brief = writer.invoke([SystemMessage(WRITER_SYSTEM), HumanMessage(prompt)])
     return {"draft": brief.model_dump()}
 

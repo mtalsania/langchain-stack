@@ -248,3 +248,27 @@ def test_langsmith_results_are_summarized(capsys):
     acc = xbrl_qa.summarize([row("q1", True, True, "a"), row("q2", False, True, "wrong answer")])
     out = capsys.readouterr().out
     assert acc == 0.5 and "numeric_match: 1/2 = 50%" in out and "wrong answer" in out
+
+
+def test_brief_writer_uses_groq_strict_schema_mode():
+    """gpt-oss once returned overview as a list; Groq rejected it ('expected string, but got array').
+    Strict json_schema mode makes Groq decode only schema-valid output."""
+    from langchain_groq import ChatGroq
+
+    from common.llm import structured
+
+    sent = []
+    model = ChatGroq(model="openai/gpt-oss-120b", api_key="test", max_retries=0)
+
+    def capture(**params):
+        sent.append(params)
+        raise RuntimeError("stop before the network")
+
+    model.client.create = capture
+    with pytest.raises(RuntimeError):
+        structured(model, cr.CompanyBrief).invoke("write a brief")
+    rf = sent[0]["response_format"]
+    assert rf["type"] == "json_schema" and rf["json_schema"]["strict"] is True
+    assert "tools" not in sent[0]
+    # fell back to function calling (3 tries) after the strict request failed
+    assert len(sent) == 4 and "tools" in sent[-1]
