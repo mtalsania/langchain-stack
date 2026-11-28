@@ -70,6 +70,23 @@ def get_llm(temperature: float = 0.0, small: bool = False, **kwargs) -> BaseChat
     raise ValueError(f"Unknown PROVIDER={provider!r}. Use groq, gemini or ollama.")
 
 
+# ------------------------------------------------------- structured output ----
+def structured(llm: BaseChatModel, schema):
+    """llm.with_structured_output(schema), made reliable on Groq.
+
+    The default (function calling) lets gpt-oss emit fields in the wrong shape, e.g. a
+    list where the schema says string, and Groq rejects the whole response with 400
+    "tool call validation failed". On gpt-oss, Groq's strict json_schema mode constrains
+    decoding to the schema, so a wrong shape cannot be generated. If Groq ever refuses
+    the strict request, fall back to function calling with a couple of retries.
+    """
+    if getattr(llm, "model_name", "") in ("openai/gpt-oss-20b", "openai/gpt-oss-120b"):
+        strict = llm.with_structured_output(schema, method="json_schema", strict=True)
+        loose = llm.with_structured_output(schema).with_retry(stop_after_attempt=3)
+        return strict.with_fallbacks([loose])
+    return llm.with_structured_output(schema)
+
+
 # ---------------------------------------------------------------- resilience ----
 def is_retryable(exc: Exception) -> bool:
     """Errors worth another try on the free tier.
