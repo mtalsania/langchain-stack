@@ -191,7 +191,7 @@ def test_graph_fans_out_and_keeps_only_verified_quotes(fake_company, monkeypatch
     assert [r["ticker"] for r in out["reports"]] and len(out["reports"]) == 2  # one branch per company
     r = out["reports"][0]
     assert r["counts"] == {"current": 3, "prior": 3, "identical": 1, "minor": 0, "changed": 1, "new": 1,
-                           "dropped": 1, "reorganized": 0, "unjudged": 0}
+                           "dropped": 1, "reorganized": 0, "unjudged": 0, "to_judge": 1}
     assert r["changed"][0]["quote_now_ok"] and r["changed"][0]["quote_before_ok"]
     assert r["issues"] == []
     assert "Regulation of artificial intelligence" in r["report_md"] and "| EXM |" in out["summary_md"]
@@ -290,3 +290,15 @@ def test_eval_scores_evidence_against_the_filings(monkeypatch):
     assert rf.quotes_verbatim(out)["score"] == 1.0
     ev = rf.evidence_fits_change(out)
     assert ev["score"] == pytest.approx(2 / 3) and "Fake" in ev["comment"]
+
+
+def test_failed_judge_cannot_look_perfect(fake_company, monkeypatch):
+    from evals import risk_faithfulness as rf
+
+    def boom(_):
+        raise RuntimeError("429 tokens per day")
+    monkeypatch.setattr(rc, "get_llm", lambda **kw: None)
+    monkeypatch.setattr(rc, "structured", lambda llm, schema: RunnableLambda(boom))
+    r = rc.graph.invoke({"tickers": ["EXM"]})["reports"][0]
+    assert r["counts"]["unjudged"] == 1 and any("not judged" in i and "429" in i for i in r["issues"])
+    assert rf.judged_coverage(r)["score"] == 0.0

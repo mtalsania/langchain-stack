@@ -5,6 +5,7 @@ checked against the source. Evaluators re-read both 10-Ks from the SEC (cached o
 disk) rather than trusting the graph's own state.
 
 Code evaluators (exact):
+- judged_coverage:      share of changed pairs the model actually judged (a failed model must not look perfect)
 - quotes_verbatim:      each "changed" claim's quotes appear word for word in the right year's Item 1A
 - evidence_fits_change: revised = a quote from each year, and they differ; added = this year's quote is
                         absent from last year's Item 1A; removed = last year's quote is absent from this year's
@@ -38,7 +39,7 @@ load_dotenv()  # LANGSMITH_API_KEY and friends, before the LangSmith client is c
 TICKERS = ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL"]
 DATASET = "risk-factor-changes"
 PASS = 0.9
-CODE_KEYS = ["quotes_verbatim", "evidence_fits_change", "new_is_new", "dropped_is_dropped"]
+CODE_KEYS = ["judged_coverage", "quotes_verbatim", "evidence_fits_change", "new_is_new", "dropped_is_dropped"]
 
 
 def target(inputs: dict) -> dict:
@@ -56,6 +57,15 @@ def _ratio(ok: int, total: int) -> float:
 
 
 # ------------------------------------------------------------ evaluators ----
+def judged_coverage(outputs: dict) -> dict:
+    """Share of changed pairs that actually got a verdict. Without this, a run where the model
+    failed (e.g. a used-up daily quota) would claim nothing and score a perfect 1.0 everywhere."""
+    c = outputs["counts"]
+    n = c.get("to_judge", 0)
+    return {"key": "judged_coverage", "score": _ratio(n - c["unjudged"], n),
+            "comment": f"{c['unjudged']} of {n} not judged"}
+
+
 def quotes_verbatim(outputs: dict) -> dict:
     now, before = _section_text(outputs["current_filing"]), _section_text(outputs["prior_filing"])
     bad = [c["heading_now"][:60] for c in outputs["changed"]
@@ -127,7 +137,8 @@ def summary_supported(outputs: dict) -> dict:
                   f"[{i}] SUMMARY: {c['summary']}\nBEFORE: {c['quote_before'] or '(nothing: new wording)'}\n"
                   f"NOW: {c['quote_now'] or '(nothing: wording removed)'}"
                   for i, c in enumerate(claims)))
-    out = structured(get_llm(small=True), SupportBatch).invoke(prompt)
+    judge = structured(get_llm(small=True), SupportBatch).with_fallbacks([structured(get_llm(), SupportBatch)])
+    out = judge.invoke(prompt)
     ok = {r.index for r in out.results if r.supported}
     bad = [claims[i]["heading_now"][:60] for i in range(len(claims)) if i not in ok]
     return {"key": "summary_supported", "score": _ratio(len(claims) - len(bad), len(claims)),
@@ -135,7 +146,7 @@ def summary_supported(outputs: dict) -> dict:
 
 
 def evaluators(judge: bool) -> list:
-    return [quotes_verbatim, evidence_fits_change, new_is_new, dropped_is_dropped] + ([summary_supported] if judge else [])
+    return [judged_coverage, quotes_verbatim, evidence_fits_change, new_is_new, dropped_is_dropped] + ([summary_supported] if judge else [])
 
 
 # ------------------------------------------------------------------ main ----

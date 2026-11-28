@@ -164,7 +164,9 @@ def fan_out_judges(state: CompanyState):
 
 def judge(state: CompanyState) -> dict:
     co = state["company"]
-    judge_llm = structured(get_llm(small=True), JudgeBatch)
+    # Small model first. If it fails (e.g. its 200K tokens/day Groq cap is used up), the large
+    # model takes the batch: it has its own daily quota on Groq.
+    judge_llm = structured(get_llm(small=True), JudgeBatch).with_fallbacks([structured(get_llm(), JudgeBatch)])
 
     def ask(pairs: list[dict]) -> list[dict]:
         prompt = f"Company: {co['name']} ({co['ticker']})\n\n" + "\n\n".join(pair_prompt(p) for p in pairs)
@@ -262,6 +264,10 @@ def render(state: CompanyState) -> dict:
     issues = [f"this year's split: {n}" for n in cur["notes"] if cur["method"] != "emphasis"]
     issues += [f"last year's split: {n}" for n in pri["notes"] if pri["method"] != "emphasis"]
     res = classify(state)
+    to_judge = sum(p["kind"] in ("changed", "possible") for p in state["pairs"])
+    if res["unjudged"] and not state.get("no_llm"):
+        issues.append(f"{len(res['unjudged'])} of {to_judge} changed pairs were not judged "
+                      f"(first error: {res['unjudged'][0].get('error', '')[:160]})")
     issues += res["issues"]
     for r in res["new"]:
         if r["text_in_other_year"] >= 0.5 or r["heading_in_other_year"]:
@@ -308,7 +314,7 @@ def render(state: CompanyState) -> dict:
               "counts": {"current": len(cur["risks"]), "prior": len(pri["risks"]), "identical": identical,
                          "minor": res["minor"], "changed": len(res["changed"]), "new": len(res["new"]),
                          "dropped": len(res["dropped"]), "reorganized": len(res["reorganized"]),
-                         "unjudged": len(res["unjudged"])},
+                         "unjudged": len(res["unjudged"]), "to_judge": to_judge},
               **{k: res[k] for k in ("changed", "new", "dropped", "reorganized")},
               "issues": issues, "report_md": "\n".join(md)}
     return {"reports": [report]}
