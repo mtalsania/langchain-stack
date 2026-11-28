@@ -14,7 +14,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from bs4 import BeautifulSoup
+import warnings
+
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 from core.sec_client import DAY, FOREVER, SECClient, default_client
 
@@ -76,7 +78,10 @@ _BLOCK_TAGS = ["p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
 
 def html_to_text(html: str) -> str:
     """Plain text with one line per block element, so headings land on their own line."""
-    soup = BeautifulSoup(html, "lxml")
+    # Inline-XBRL 10-Ks start with an XML declaration; they still parse correctly as HTML.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(html, "lxml")
     for t in soup(["script", "style", "head"]):
         t.decompose()
     # Inline XBRL keeps its hidden metadata in <ix:header>; it is not part of the text.

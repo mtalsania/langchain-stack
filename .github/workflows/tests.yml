@@ -30,3 +30,6 @@ jobs:
       - name: Live SEC tests
         if: ${{ env.SEC_USER_AGENT != '' }}
         run: pytest --live -v && python -m core.demo NVDA --sections
+      - name: Diagnose XBRL tagging (temporary)
+        if: ${{ failure() && env.SEC_USER_AGENT != '' }}
+        run: python scripts/diagnose_facts.py XOM
