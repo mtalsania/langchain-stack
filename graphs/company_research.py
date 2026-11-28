@@ -57,8 +57,10 @@ class ResearchPlan(BaseModel):
 class CompanyBrief(BaseModel):
     overview: str = Field(description="2-3 sentences: what the company does and how it makes money, citing [S#]")
     financial_story: list[str] = Field(
-        description="3-5 bullets on the numbers. Use ONLY placeholders like {{revenue:2025}}, "
-        "{{gross_margin:2025}} or {{growth:revenue:2025}} for figures; never type a number"
+        description="3-5 full-sentence bullets that explain the numbers, each with 1-3 placeholders "
+        "embedded in the sentence, e.g. 'Revenue rose {{growth:revenue:2025}} to {{revenue:2025}}, "
+        "while gross margin moved {{growth:gross_margin:2025}} to {{gross_margin:2025}}.' "
+        "Never type a number, and never write a bullet that is only a placeholder"
     )
     drivers: list[str] = Field(description="2-4 bullets on what drove results, each citing [S#]")
     risks: list[str] = Field(description="2-4 most material risks, each citing [S#]")
@@ -99,6 +101,9 @@ WRITER_SYSTEM = """You write concise, factual company research briefs from SEC 1
 Rules:
 - Figures: write ONLY the placeholders from the FIGURES list, exactly as shown, e.g. {{revenue:2025}}.
   For year-over-year change write {{growth:METRIC:YEAR}}. Never type a number, percentage or dollar amount.
+- Financial story bullets are sentences that say what changed and why it matters, with placeholders inside
+  them, e.g. "Revenue rose {{growth:revenue:2025}} to {{revenue:2025}} as data center demand grew [S2]."
+  A bullet that is only placeholders is useless.
 - Every claim about drivers, risks or priorities cites a passage like [S3]. Use only the passage ids given.
 - If the passages don't support a point, leave it out. No outside knowledge."""
 
@@ -175,6 +180,10 @@ def render(state: ResearchState) -> dict:
 
     def bullets(items: list[str]) -> str:
         return "\n".join(f"- {fix(t)}" for t in items)
+
+    for t in draft["financial_story"]:
+        if len(re.findall(r"[A-Za-z]{2,}", PLACEHOLDER.sub("", t))) < 4:
+            issues.append(f"financial story bullet has no explanation: {t!r}")
 
     years = snap["years"]
     table_rows = ["| Metric | " + " | ".join(f"FY{y}" for y in years) + " |", "|---" * (len(years) + 1) + "|"]

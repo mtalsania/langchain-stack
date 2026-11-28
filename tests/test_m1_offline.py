@@ -151,3 +151,11 @@ def test_numeric_match_tolerance_and_citation_check():
     assert not xbrl_qa.numeric_match({"value": 101.0}, ref)["score"]
     assert not xbrl_qa.numeric_match({"value": None}, ref)["score"]
     assert xbrl_qa.cites_filing({"accession": "a1"}, ref)["score"]
+
+
+def test_bullets_that_are_only_numbers_are_flagged(monkeypatch):
+    snap = fin.company_facts("AAPL")
+    draft = cr.CompanyBrief(overview="x [S1].", financial_story=["{{revenue:2024}}", "Revenue reached {{revenue:2024}} this year."],
+                            drivers=[], risks=[], priorities=[]).model_dump()
+    out = cr.render({"snapshot": snap, "draft": draft, "sources": [{"id": "S1", "item": "7", "section": "MD&A", "filing_date": "2024-11-01", "url": "u"}], "issues": []})
+    assert out["issues"] == ["financial story bullet has no explanation: '{{revenue:2024}}'"]
