@@ -5,8 +5,9 @@ checked against the source. Evaluators re-read both 10-Ks from the SEC (cached o
 disk) rather than trusting the graph's own state.
 
 Code evaluators (exact):
-- quotes_verbatim:      each "changed" claim's two quotes appear word for word in the right year's Item 1A
-- quotes_both_years:    each "changed" claim quotes both years, and the two quotes differ
+- quotes_verbatim:      each "changed" claim's quotes appear word for word in the right year's Item 1A
+- evidence_fits_change: revised = a quote from each year, and they differ; added = this year's quote is
+                        absent from last year's Item 1A; removed = last year's quote is absent from this year's
 - new_is_new:           a "new" risk's heading is absent from last year's Item 1A, and under half its text is there
 - dropped_is_dropped:   the same check the other way round
 LLM evaluator (with --judge, small model, one call per company):
@@ -25,16 +26,19 @@ import argparse
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from core.filings import Filing
 from core.risk_factors import risk_section
 from tools.risk_matching import contains_quote, overlap, shingles
 
+load_dotenv()  # LANGSMITH_API_KEY and friends, before the LangSmith client is created
+
 TICKERS = ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL"]
 DATASET = "risk-factor-changes"
 PASS = 0.9
-CODE_KEYS = ["quotes_verbatim", "quotes_both_years", "new_is_new", "dropped_is_dropped"]
+CODE_KEYS = ["quotes_verbatim", "evidence_fits_change", "new_is_new", "dropped_is_dropped"]
 
 
 def target(inputs: dict) -> dict:
@@ -55,17 +59,25 @@ def _ratio(ok: int, total: int) -> float:
 def quotes_verbatim(outputs: dict) -> dict:
     now, before = _section_text(outputs["current_filing"]), _section_text(outputs["prior_filing"])
     bad = [c["heading_now"][:60] for c in outputs["changed"]
-           if not (contains_quote(now, c["quote_now"]) and contains_quote(before, c["quote_before"]))]
+           if (c["quote_now"] and not contains_quote(now, c["quote_now"]))
+           or (c["quote_before"] and not contains_quote(before, c["quote_before"]))
+           or not (c["quote_now"] or c["quote_before"])]
     n = len(outputs["changed"])
     return {"key": "quotes_verbatim", "score": _ratio(n - len(bad), n), "comment": "; ".join(bad)[:500]}
 
 
-def quotes_both_years(outputs: dict) -> dict:
-    bad = [c["heading_now"][:60] for c in outputs["changed"]
-           if not (c["quote_now"].strip() and c["quote_before"].strip())
-           or c["quote_now"].strip().lower() == c["quote_before"].strip().lower()]
+def evidence_fits_change(outputs: dict) -> dict:
+    now, before = _section_text(outputs["current_filing"]), _section_text(outputs["prior_filing"])
+    bad = []
+    for c in outputs["changed"]:
+        qn, qb, kind = c["quote_now"], c["quote_before"], c.get("change_type", "revised")
+        ok = {"revised": bool(qn and qb) and qn.strip().lower() != qb.strip().lower(),
+              "added": bool(qn) and not contains_quote(before, qn),
+              "removed": bool(qb) and not contains_quote(now, qb)}.get(kind, False)
+        if not ok:
+            bad.append(f"{kind}: {c['heading_now'][:60]}")
     n = len(outputs["changed"])
-    return {"key": "quotes_both_years", "score": _ratio(n - len(bad), n), "comment": "; ".join(bad)[:500]}
+    return {"key": "evidence_fits_change", "score": _ratio(n - len(bad), n), "comment": "; ".join(bad)[:500]}
 
 
 def _absent(items: list[dict], other_text: str, key: str) -> dict:
@@ -112,7 +124,8 @@ def summary_supported(outputs: dict) -> dict:
     prompt = ("For each item, is the SUMMARY fully supported by the two quotes from a company's 10-K "
               "(BEFORE = last year, NOW = this year)? Unsupported = it states a fact, number or direction "
               "the quotes don't show.\n\n" + "\n\n".join(
-                  f"[{i}] SUMMARY: {c['summary']}\nBEFORE: {c['quote_before']}\nNOW: {c['quote_now']}"
+                  f"[{i}] SUMMARY: {c['summary']}\nBEFORE: {c['quote_before'] or '(nothing: new wording)'}\n"
+                  f"NOW: {c['quote_now'] or '(nothing: wording removed)'}"
                   for i, c in enumerate(claims)))
     out = structured(get_llm(small=True), SupportBatch).invoke(prompt)
     ok = {r.index for r in out.results if r.supported}
@@ -122,7 +135,7 @@ def summary_supported(outputs: dict) -> dict:
 
 
 def evaluators(judge: bool) -> list:
-    return [quotes_verbatim, quotes_both_years, new_is_new, dropped_is_dropped] + ([summary_supported] if judge else [])
+    return [quotes_verbatim, evidence_fits_change, new_is_new, dropped_is_dropped] + ([summary_supported] if judge else [])
 
 
 # ------------------------------------------------------------------ main ----

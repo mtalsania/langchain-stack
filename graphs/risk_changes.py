@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import operator
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
@@ -82,10 +82,13 @@ class PairVerdict(BaseModel):
     material: bool = Field(description="True if the change matters to an investor: a new exposure, event, "
                            "market, regulation or number; a wider or narrower scope; a removed safeguard. "
                            "False for rewording, reordering, updated dates or style")
-    summary: str = Field(description="One sentence: what changed in this risk, in plain words. Empty if not material")
-    quote_now: str = Field(description="Exact words copied from the NOW text that show the change")
-    quote_before: str = Field(description="Exact words copied from the BEFORE text: the passage that was replaced, "
-                              "or the closest passage where the new wording was added")
+    change_type: Literal["added", "removed", "revised"] = Field(
+        description="added: new wording with no counterpart last year; removed: wording deleted this year; "
+                    "revised: a passage rewritten")
+    summary: str = Field(description="One sentence: what changed, saying only what the quotes show. Empty if not material")
+    quote_now: str = Field(description="Exact words copied from the NOW text that show the change. Empty if removed")
+    quote_before: str = Field(description="Exact words copied from the BEFORE text that were replaced or deleted. "
+                              "Empty if added")
 
 
 class JudgeBatch(BaseModel):
@@ -98,9 +101,13 @@ For every pair, return one verdict:
 - same_risk: do both versions describe the same underlying risk?
 - material: would an investor care about the change? New exposures, events, markets, laws, customers,
   numbers or a wider/narrower scope are material. Rewording, reordering, updated dates are not.
-- summary: one plain sentence saying what changed (empty if not material).
-- quote_now and quote_before: copy words EXACTLY from the NOW and BEFORE passages, 5 to 40 words each.
-  Never paraphrase inside a quote. Use only the text given."""
+- change_type: "added" (new wording, nothing it replaced), "removed" (wording deleted, nothing replaced it),
+  or "revised" (a passage rewritten: before and after say the same kind of thing differently).
+- summary: one plain sentence saying what changed. Say only what your quotes show; no other facts or numbers.
+- quote_now: copy words EXACTLY from a NOW passage that shows the change (empty if removed).
+- quote_before: copy words EXACTLY from the BEFORE passage that was replaced or deleted (empty if added).
+  Never pick an unrelated BEFORE sentence just to fill the field.
+Quotes are 5 to 40 words, never paraphrased. Use only the text given. Return a verdict for EVERY pair id."""
 
 
 # ----------------------------------------------------------------- nodes ----
@@ -157,13 +164,51 @@ def fan_out_judges(state: CompanyState):
 
 def judge(state: CompanyState) -> dict:
     co = state["company"]
-    prompt = f"Company: {co['name']} ({co['ticker']})\n\n" + "\n\n".join(pair_prompt(p) for p in state["batch"])
     judge_llm = structured(get_llm(small=True), JudgeBatch)
-    try:
+
+    def ask(pairs: list[dict]) -> list[dict]:
+        prompt = f"Company: {co['name']} ({co['ticker']})\n\n" + "\n\n".join(pair_prompt(p) for p in pairs)
         out = judge_llm.invoke([SystemMessage(JUDGE_SYSTEM), HumanMessage(prompt)])
-        return {"verdicts": [v.model_dump() for v in out.verdicts]}
+        return [v.model_dump() for v in out.verdicts]
+
+    try:
+        verdicts = ask(state["batch"])
+        got = {v["pair_id"] for v in verdicts}
+        missing = [p for p in state["batch"] if p["id"] not in got]
+        if missing:  # the small model sometimes skips a pair in a batch: ask once more for just those
+            verdicts += ask(missing)
+        return {"verdicts": verdicts}
     except Exception as e:  # one failed batch should not sink the whole company
         return {"verdicts": [{"pair_id": p["id"], "error": str(e)[:200]} for p in state["batch"]]}
+
+
+def check_evidence(v: dict, now_text: str, before_text: str, now_full: str, before_full: str) -> dict:
+    """The faithfulness rule for one claimed change, checked in code.
+
+    revised: a quote from each year, each found word for word in that year's version of the risk.
+    added:   a quote from this year that is NOT anywhere in last year's Item 1A.
+    removed: a quote from last year that is NOT anywhere in this year's Item 1A.
+    """
+    kind, qn, qb = v["change_type"], v["quote_now"].strip(), v["quote_before"].strip()
+    if kind == "added":
+        qb = ""  # a "before" quote for pure additions is filler; never show it
+    if kind == "removed":
+        qn = ""
+    problems = []
+    now_ok = contains_quote(now_text, qn) if qn else kind == "removed"
+    before_ok = contains_quote(before_text, qb) if qb else kind == "added"
+    if not now_ok:
+        problems.append(f"this year's quote missing or not found verbatim: {qn[:100]!r}")
+    if not before_ok:
+        problems.append(f"last year's quote missing or not found verbatim: {qb[:100]!r}")
+    if kind == "added" and qn and contains_quote(before_full, qn):
+        problems.append(f"'added' text was already in last year's 10-K: {qn[:100]!r}")
+    if kind == "removed" and qb and contains_quote(now_full, qb):
+        problems.append(f"'removed' text is still in this year's 10-K: {qb[:100]!r}")
+    if kind == "revised" and qn and qn.lower() == qb.lower():
+        problems.append("'revised' quotes are identical")
+    return {"quote_now": qn, "quote_before": qb, "quote_now_ok": now_ok, "quote_before_ok": before_ok,
+            "problems": problems}
 
 
 def classify(state: CompanyState) -> dict:
@@ -190,14 +235,9 @@ def classify(state: CompanyState) -> dict:
             minor += 1
             continue
         entry = {"pair_id": p["id"], "heading_now": p["current"]["heading"], "heading_before": p["prior"]["heading"],
-                 "category": p["current"]["category"], "summary": v["summary"],
-                 "quote_now": v["quote_now"], "quote_before": v["quote_before"],
-                 "quote_now_ok": contains_quote(p["current"]["text"], v["quote_now"]),
-                 "quote_before_ok": contains_quote(p["prior"]["text"], v["quote_before"])}
-        if not entry["quote_now_ok"]:
-            issues.append(f"{p['id']}: quote from this year not found verbatim: {v['quote_now'][:100]!r}")
-        if not entry["quote_before_ok"]:
-            issues.append(f"{p['id']}: quote from last year not found verbatim: {v['quote_before'][:100]!r}")
+                 "category": p["current"]["category"], "summary": v["summary"], "change_type": v["change_type"],
+                 **check_evidence(v, p["current"]["text"], p["prior"]["text"], cur_full, pri_full)}
+        issues += [f"{p['id']}: {problem}" for problem in entry["problems"]]
         changed.append(entry)
 
     def lifecycle(items: list[dict], other_full: str) -> list[dict]:
@@ -249,9 +289,11 @@ def render(state: CompanyState) -> dict:
     md += [f"- **{r['heading']}**" + (f" _({r['category']})_" if r["category"] else "") for r in res["dropped"]] or ["- none"]
     md += ["", "## Materially changed"]
     for c in res["changed"]:
-        md += [f"- **{c['heading_now']}**", f"  - {c['summary']}",
-               f"  - Now: \"{c['quote_now']}\"" + ("" if c["quote_now_ok"] else " ⚠ not found verbatim"),
-               f"  - Before: \"{c['quote_before']}\"" + ("" if c["quote_before_ok"] else " ⚠ not found verbatim")]
+        flag = " ⚠ see Unverified" if c["problems"] else ""
+        now = f"\"{c['quote_now']}\"" if c["quote_now"] else "(removed; not in this year's 10-K)"
+        before = f"\"{c['quote_before']}\"" if c["quote_before"] else "(new wording; not in last year's 10-K)"
+        md += [f"- **{c['heading_now']}** ({c['change_type']}){flag}", f"  - {c['summary']}",
+               f"  - Now: {now}", f"  - Before: {before}"]
     if not res["changed"]:
         md.append("- none" if not state.get("no_llm") else "- (not judged: run without --no-llm)")
     if res["reorganized"]:

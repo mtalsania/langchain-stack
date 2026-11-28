@@ -174,10 +174,11 @@ def fake_company(monkeypatch):
     monkeypatch.setattr(common.embeddings, "get_embeddings", lambda: DeterministicFakeEmbedding(size=32))
 
 
-def stub_judge(quote_now, quote_before):
+def stub_judge(quote_now, quote_before, change_type="revised"):
     def answer(_messages):
         return rc.JudgeBatch(verdicts=[rc.PairVerdict(
-            pair_id="P2", same_risk=True, material=True, summary="Adds that export rules already cut sales.",
+            pair_id="P2", same_risk=True, material=True, change_type=change_type,
+            summary="Adds that export rules already cut sales.",
             quote_now=quote_now, quote_before=quote_before)])
     return RunnableLambda(answer)
 
@@ -245,3 +246,47 @@ def test_summary_with_heading_styled_categories_is_skipped():
     risks, _ = split_risks(section_of(risk_html(layout, heading_style=B)))
     assert [r.heading for r in risks] == ["Failure to meet the evolving needs of our industry may adversely impact our results."]
     assert risks[0].category == "Risks Related to Our Industry and Markets"
+
+
+def test_added_change_needs_no_filler_quote_but_must_be_new(fake_company, monkeypatch):
+    monkeypatch.setattr(rc, "get_llm", lambda **kw: None)
+    monkeypatch.setattr(rc, "structured", lambda llm, schema: stub_judge(
+        "which has already reduced our sales", "Currency swings affect results.", change_type="added"))
+    c = rc.graph.invoke({"tickers": ["EXM"]})["reports"][0]["changed"][0]
+    assert c["quote_before"] == "" and c["problems"] == []  # filler "before" quote dropped
+    monkeypatch.setattr(rc, "structured", lambda llm, schema: stub_judge(
+        "could delay shipments, raise costs", "", change_type="added"))  # was already there last year
+    r = rc.graph.invoke({"tickers": ["EXM"]})["reports"][0]
+    assert any("already in last year" in i for i in r["issues"])
+
+
+def test_judge_asks_again_for_pairs_it_skipped(fake_company, monkeypatch):
+    calls = []
+
+    def answer(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return rc.JudgeBatch(verdicts=[])
+        return rc.JudgeBatch(verdicts=[rc.PairVerdict(pair_id="P2", same_risk=True, material=False, change_type="revised",
+                                                      summary="", quote_now="", quote_before="")])
+    monkeypatch.setattr(rc, "get_llm", lambda **kw: None)
+    monkeypatch.setattr(rc, "structured", lambda llm, schema: RunnableLambda(answer))
+    r = rc.graph.invoke({"tickers": ["EXM"]})["reports"][0]
+    assert len(calls) == 2 and r["counts"]["unjudged"] == 0 and r["counts"]["minor"] == 1
+
+
+def test_eval_scores_evidence_against_the_filings(monkeypatch):
+    from evals import risk_faithfulness as rf
+
+    texts = {"now": "Export rules have limited sales to China. We added a new AI risk.",
+             "before": "Export rules may limit sales to China."}
+    monkeypatch.setattr(rf, "_section_text", lambda f: texts[f["k"]])
+    out = {"current_filing": {"k": "now"}, "prior_filing": {"k": "before"}, "changed": [
+        {"heading_now": "Exports", "change_type": "revised", "quote_now": "Export rules have limited sales to China",
+         "quote_before": "Export rules may limit sales to China"},
+        {"heading_now": "AI", "change_type": "added", "quote_now": "We added a new AI risk", "quote_before": ""},
+        {"heading_now": "Fake", "change_type": "added", "quote_now": "Export rules may limit sales", "quote_before": ""},
+    ]}
+    assert rf.quotes_verbatim(out)["score"] == 1.0
+    ev = rf.evidence_fits_change(out)
+    assert ev["score"] == pytest.approx(2 / 3) and "Fake" in ev["comment"]

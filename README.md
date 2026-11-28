@@ -128,7 +128,7 @@ langgraph dev                                                      # pick "risk_
 ```
 
 Each report lists **new**, **dropped** and **materially changed** risks between the two latest 10-Ks,
-with links to both filings. A changed risk always comes with a quote from each year.
+with links to both filings. A changed risk always comes with its evidence: a quote from each year for a rewritten passage, or a quote that code confirms is absent from the other year for an addition or deletion.
 
 How it works:
 
@@ -152,7 +152,7 @@ How it works:
 | `Annotated[list, operator.add]` reducer that merges the parallel results | `verdicts`, `reports` |
 
 **The eval** (`evals/risk_faithfulness.py`) needs no hand labels: every claim carries its evidence.
-It re-reads both filings and scores `quotes_verbatim`, `quotes_both_years`, `new_is_new` and
+It re-reads both filings and scores `quotes_verbatim`, `evidence_fits_change`, `new_is_new` and
 `dropped_is_dropped` (code), plus `summary_supported` (LLM judge, with `--judge`).
 
 **Done when:** you spot-check the 5 reports and agree with them. The eval has to pass first (every code score ≥ 0.9).
