@@ -22,9 +22,24 @@ DEFAULT_MODELS = {
 _rate_limiter = InMemoryRateLimiter(requests_per_second=0.4, max_bucket_size=3)
 
 
-def get_llm(temperature: float = 0.0, **kwargs) -> BaseChatModel:
+SMALL_DEFAULTS = {
+    "groq": "openai/gpt-oss-20b",
+    "gemini": "gemini-2.5-flash-lite",
+    "ollama": "qwen3:8b",
+}
+
+
+def get_llm(temperature: float = 0.0, small: bool = False, **kwargs) -> BaseChatModel:
+    """The strong model by default; small=True for cheap steps (planning, extraction, eval QA).
+
+    On Groq each model has its own daily token quota, so routing cheap steps to the
+    small model also stretches the free tier.
+    """
     provider = os.getenv("PROVIDER", "groq").lower()
-    model = os.getenv("MODEL") or DEFAULT_MODELS[provider]
+    if small:
+        model = os.getenv("SMALL_MODEL") or SMALL_DEFAULTS[provider]
+    else:
+        model = os.getenv("MODEL") or DEFAULT_MODELS[provider]
 
     if provider == "groq":
         from langchain_groq import ChatGroq

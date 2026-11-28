@@ -1,0 +1,55 @@
+name: m1-live
+
+# Runs the research graph and the XBRL numeric eval against real Groq + SEC.
+# Manual only (Actions tab > m1-live > Run workflow), so it never burns free-tier
+# quota by accident. Needs repo secrets SEC_USER_AGENT and GROQ_API_KEY;
+# LANGSMITH_API_KEY is optional (without it the eval scores locally).
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: Ticker to research
+        default: NVDA
+      limit:
+        description: Number of eval questions (0 = all 20)
+        default: "0"
+
+jobs:
+  research-and-eval:
+    runs-on: ubuntu-latest
+    env:
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' }}
+      LANGSMITH_PROJECT: watchlist-agent
+      FASTEMBED_CACHE_PATH: .cache/fastembed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4 lxml python-dotenv langchain langchain-core langchain-text-splitters langgraph langchain-groq langsmith fastembed
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: m1-${{ github.run_id }}
+          restore-keys: |
+            m1-
+            sec-
+      - name: Research brief
+        # A brief with unverified items exits 1; keep going so the eval still runs.
+        continue-on-error: true
+        run: python -m graphs.company_research "${{ inputs.ticker }}" | tee brief.md
+      - name: Numeric eval
+        run: |
+          if [ -n "$LANGSMITH_API_KEY" ]; then
+            python -m evals.xbrl_qa --limit "${{ inputs.limit }}"
+          else
+            python -m evals.xbrl_qa --local --limit "${{ inputs.limit }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: brief-${{ inputs.ticker }}
+          path: brief.md

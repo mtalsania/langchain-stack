@@ -83,6 +83,40 @@ pytest --live                         # checks exact figures against the live SE
 GitHub Actions runs the offline tests on every push. Add a repository secret named `SEC_USER_AGENT`
 and it runs the live tests too.
 
+## M1: research one company
+
+```bash
+python -m graphs.company_research NVDA                         # markdown brief, numbers cited to the 10-K
+python -m graphs.company_research AAPL --focus "services and China risk"
+python -m evals.xbrl_qa --local                                # 20 numeric questions, scored on your machine
+python -m evals.xbrl_qa                                        # same, as a LangSmith dataset + experiment
+langgraph dev                                                  # step through the graph in Studio
+```
+
+The graph: `fetch_numbers` (XBRL, no LLM) → `plan` (small model writes search queries) → `retrieve`
+(RAG over Items 1, 1A, 7) → `write` (strong model drafts) → `render` (code fills in the numbers).
+
+**The model never types a number.** It writes placeholders like `{{revenue:2025}}` or
+`{{growth:revenue:2025}}`, and `render` replaces them with the XBRL value and a citation to the
+filing. Any number the model types anyway, and any `[S#]` citation to a passage that was never
+retrieved, is listed under "Unverified" at the end of the brief, and the command exits with 1.
+
+| File | What it does | LangChain piece |
+|---|---|---|
+| `tools/financials.py` | `get_metric`, `list_fiscal_years` tools; XBRL snapshot for prompts | `@tool` |
+| `tools/filing_search.py` | Chunks 10-K items, embeds locally, caches the index per filing; `search_filing` tool | splitters, embeddings, `InMemoryVectorStore` |
+| `graphs/company_research.py` | The research subgraph above | `StateGraph`, structured output |
+| `evals/xbrl_qa.py` | Builds questions + answers from XBRL, scores an agent on them | `create_agent`, `response_format`, LangSmith `evaluate` |
+
+**Done when:** `python -m evals.xbrl_qa` scores `numeric_match` ≥ 90%.
+
+**Free-tier cost:** one brief is 2 model calls (about 6K tokens, almost all on the large model).
+The 20-question eval is about 40 small-model calls. Each Groq model has its own daily quota.
+
+**Running it in GitHub instead of locally:** the `m1-live` workflow (Actions tab → m1-live →
+Run workflow) does both steps. It needs repository secrets `GROQ_API_KEY` and `SEC_USER_AGENT`,
+and `LANGSMITH_API_KEY` if you want the experiment in LangSmith.
+
 ## Data sources
 
 All public, all free:
