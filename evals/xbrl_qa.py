@@ -150,7 +150,7 @@ def run_local(examples: list[dict]) -> float:
     return acc
 
 
-def run_langsmith(examples: list[dict]) -> None:
+def run_langsmith(examples: list[dict]) -> float:
     from langsmith import Client
 
     client = Client()
@@ -171,6 +171,22 @@ def run_langsmith(examples: list[dict]) -> None:
         max_concurrency=1,  # Groq free tier: one question at a time
     )
     print(f"Experiment: {res.experiment_name}")
+    return summarize(res)
+
+
+def summarize(results) -> float:
+    """Print the same score table as --local, from a LangSmith ExperimentResults."""
+    hits = total = cites = 0
+    for row in results:
+        scores = {r.key: r.score for r in row["evaluation_results"]["results"]}
+        out = row["run"].outputs or {}
+        ok = bool(scores.get("numeric_match"))
+        hits, total, cites = hits + ok, total + 1, cites + bool(scores.get("cites_filing"))
+        if not ok:
+            print(f"FAIL  {row['example'].inputs['question']}  -> {out.get('answer_text') or out.get('error') or out}")
+    acc = hits / total if total else 0.0
+    print(f"\nnumeric_match: {hits}/{total} = {acc:.0%}   cites_filing: {cites}/{total}   (M1 target: 90%)")
+    return acc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,8 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(examples)} questions generated from XBRL")
     if args.local:
         return 0 if run_local(examples) >= 0.9 else 1
-    run_langsmith(examples)
-    return 0
+    return 0 if run_langsmith(examples) >= 0.9 else 1
 
 
 if __name__ == "__main__":

@@ -236,3 +236,15 @@ def test_only_flaky_errors_are_retried():
 
     assert is_retryable(ParseFailed())
     assert not is_retryable(ValueError("json mode cannot be combined with tool/function calling"))
+
+
+def test_langsmith_results_are_summarized(capsys):
+    from types import SimpleNamespace as NS
+
+    def row(q, n, c, text):
+        return {"example": NS(inputs={"question": q}), "run": NS(outputs={"answer_text": text}),
+                "evaluation_results": {"results": [NS(key="numeric_match", score=n), NS(key="cites_filing", score=c)]}}
+
+    acc = xbrl_qa.summarize([row("q1", True, True, "a"), row("q2", False, True, "wrong answer")])
+    out = capsys.readouterr().out
+    assert acc == 0.5 and "numeric_match: 1/2 = 50%" in out and "wrong answer" in out
