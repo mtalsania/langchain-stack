@@ -1,6 +1,6 @@
 """Show how a company's XBRL facts are tagged, to debug why a metric is missing.
 
-    python scripts/diagnose_facts.py XOM
+    python -m scripts.diagnose_facts XOM
 """
 import sys
 from collections import Counter
