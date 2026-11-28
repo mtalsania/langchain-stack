@@ -132,7 +132,9 @@ def _is_category(ln: _Line, hstyle: int, next_ln: _Line | None) -> bool:
     """
     if not _is_label(ln):
         return False
-    if _CATEGORY.search(ln.text) or (_SHORT_CATEGORY.search(ln.text) and ln.words <= 6):
+    # "Operating Risks" is a label; "We Are Subject to Payments-Related Risks" (Amazon) is a risk.
+    if _CATEGORY.search(ln.text) or (_SHORT_CATEGORY.search(ln.text) and ln.words <= 6
+                                     and not re.match(r"(we|our|the company)\b", ln.text, re.I)):
         return True
     if next_ln is None or next_ln.style != hstyle:
         return False

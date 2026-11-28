@@ -117,6 +117,52 @@ The 20-question eval is about 40 small-model calls. Each Groq model has its own 
 Run workflow) does both steps. It needs repository secrets `GROQ_API_KEY` and `SEC_USER_AGENT`,
 and `LANGSMITH_API_KEY` if you want the experiment in LangSmith.
 
+## M2: what changed in the risk factors
+
+```bash
+python -m core.risk_factors NVDA                                   # this year's risk headings, by category (no LLM)
+python -m graphs.risk_changes NVDA --no-llm                        # split + match both years, zero model calls
+python -m graphs.risk_changes NVDA AAPL MSFT AMZN GOOGL --out reports/   # full run, one report per company
+python -m evals.risk_faithfulness --out reports/                   # same run, scored in LangSmith
+langgraph dev                                                      # pick "risk_changes" in Studio
+```
+
+Each report lists **new**, **dropped** and **materially changed** risks between the two latest 10-Ks,
+with links to both filings. A changed risk always comes with a quote from each year.
+
+How it works:
+
+1. **Split** (`core/risk_factors.py`, no LLM). Risk headings are styled (bold or italic), bodies are not.
+   The parser keeps the styling, finds the style used for headings, and skips the "summary of risk
+   factors" block, page numbers and running headers.
+2. **Match** (`tools/risk_matching.py`, no LLM). Identical text first, then pairs scored by local
+   embeddings and by how many 6-word phrases they share. Pairs whose words barely changed are "minor".
+   Leftovers are new or dropped, unless their text clearly moved into another risk ("reorganized").
+3. **Judge** (small model). Only pairs whose wording changed go to the model, as compact before/after
+   sentences, a few pairs per call. It decides if the change is material, writes one sentence, and copies
+   a quote from each year.
+4. **Render** (code). Every quote is checked word for word against that year's Item 1A. A quote that
+   isn't there is listed under "Unverified".
+
+| LangGraph piece | Where |
+|---|---|
+| `Send` fan-out, one branch per company, all in parallel | `fan_out_companies` |
+| A compiled graph used as a node (subgraph), with `output_schema` so parallel branches don't clash | `company_graph` |
+| A second `Send` fan-out inside the subgraph, one judge per batch | `fan_out_judges` |
+| `Annotated[list, operator.add]` reducer that merges the parallel results | `verdicts`, `reports` |
+
+**The eval** (`evals/risk_faithfulness.py`) needs no hand labels: every claim carries its evidence.
+It re-reads both filings and scores `quotes_verbatim`, `quotes_both_years`, `new_is_new` and
+`dropped_is_dropped` (code), plus `summary_supported` (LLM judge, with `--judge`).
+
+**Done when:** you spot-check the 5 reports and agree with them. The eval has to pass first (every code score ≥ 0.9).
+
+**Free-tier cost:** about 90 changed pairs across the 5 companies, about 30 small-model calls.
+The command prints the exact token count. Plan on one full 5-company run per day; single-company reruns are cheap.
+
+**Running it in GitHub instead:** Actions tab → m2-live → Run workflow. Needs `SEC_USER_AGENT` and `GROQ_API_KEY`
+secrets (`LANGSMITH_API_KEY` optional). The reports are attached to the run as an artifact.
+
 ## Data sources
 
 All public, all free:

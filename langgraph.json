@@ -1,7 +1,10 @@
 {
-  "dependencies": ["."],
+  "dependencies": [
+    "."
+  ],
   "graphs": {
-    "company_research": "./graphs/company_research.py:graph"
+    "company_research": "./graphs/company_research.py:graph",
+    "risk_changes": "./graphs/risk_changes.py:graph"
   },
   "env": ".env",
   "python_version": "3.12"

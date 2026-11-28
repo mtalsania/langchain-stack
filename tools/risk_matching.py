@@ -93,6 +93,10 @@ def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
     if e - s > MAX_HUNK_CHARS:  # very long sentence: keep a window around the change
         s = max(s, start - MAX_HUNK_CHARS // 3)
         e = min(e, max(end, start) + MAX_HUNK_CHARS // 3 * 2)
+        while 0 < s < len(text) and not text[s - 1].isspace():  # don't cut a word in half
+            s += 1
+        while e < len(text) and not text[e].isspace():
+            e += 1
     return s, e
 
 
