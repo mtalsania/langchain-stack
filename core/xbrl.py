@@ -169,6 +169,31 @@ class CompanyFacts:
         return out
 
 
+# When a company reorganizes under a new holding company, the ticker moves to a
+# new CIK that starts with no 10-K history. Its history stays under the old CIK.
+# Evidence for each entry: the successor's own companyfacts cite filings whose
+# accession numbers start with the predecessor's CIK.
+PREDECESSOR_CIKS: dict[int, tuple[int, ...]] = {
+    2115436: (34088,),  # ExxonMobil Holdings Corp (2026) <- Exxon Mobil Corp
+}
+
+
+def merge_facts(primary: dict, *others: dict) -> dict:
+    """Combine companyfacts payloads; identical facts reported under both CIKs appear once."""
+    merged = {"cik": primary["cik"], "entityName": primary.get("entityName", ""), "facts": {}}
+    for data in (primary, *others):
+        for tax, tags in data.get("facts", {}).items():
+            for tag, body in tags.items():
+                dst = merged["facts"].setdefault(tax, {}).setdefault(tag, {"label": body.get("label"), "units": {}})
+                for unit, rows in body.get("units", {}).items():
+                    out = dst["units"].setdefault(unit, [])
+                    seen = {(r["accn"], r.get("start"), r["end"], r["val"]) for r in out}
+                    out.extend(r for r in rows if (r["accn"], r.get("start"), r["end"], r["val"]) not in seen)
+    return merged
+
+
 def load_company_facts(cik: int, client: SECClient | None = None) -> CompanyFacts:
-    data = (client or default_client()).get_json(COMPANYFACTS_URL.format(cik=cik), ttl=DAY)
-    return CompanyFacts(data)
+    client = client or default_client()
+    data = client.get_json(COMPANYFACTS_URL.format(cik=cik), ttl=DAY)
+    olds = [client.get_json(COMPANYFACTS_URL.format(cik=p), ttl=DAY) for p in PREDECESSOR_CIKS.get(cik, ())]
+    return CompanyFacts(merge_facts(data, *olds) if olds else data)

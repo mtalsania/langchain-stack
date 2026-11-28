@@ -15,7 +15,7 @@ from core.filings import extract_section, html_to_text, parse_submissions
 from core.metrics import all_metrics, latest_years
 from core.sec_client import RateLimiter, SECClient, SECConfigError, user_agent_from_env
 from core.tickers import normalize_ticker, parse_ticker_file
-from core.xbrl import CompanyFacts
+from core.xbrl import CompanyFacts, merge_facts
 
 M = 1_000_000
 
@@ -273,3 +273,19 @@ def test_parse_submissions_newest_first():
     fs = parse_submissions(data)
     assert [f.form for f in fs] == ["10-Q", "10-K"]
     assert fs[1].url == "https://www.sec.gov/Archives/edgar/data/320193/accna/k.htm"
+
+
+def test_successor_cik_inherits_predecessor_history():
+    # Shape of the 2026 Exxon reorganization: new CIK has only 10-Qs, history sits under the old one.
+    new = companyfacts({"Revenues": {"units": {"USD": [
+        fact(113_164 * M, "2026-09-30", "2026-07-01", fy=2026, fp="Q3", form="10-Q", filed="2026-11-02", accn="accn-new-q3")]}}},
+        cik=2115436, name="ExxonMobil Holdings Corporation")
+    old = companyfacts({"Revenues": {"units": {"USD": [
+        fact(100 * M, "2025-12-31", "2025-01-01", fy=2025, filed="2026-02-18", accn="accn-old-fy25"),
+        fact(113_164 * M, "2026-09-30", "2026-07-01", fy=2026, fp="Q3", form="10-Q", filed="2026-11-02", accn="accn-new-q3")]}}},
+        cik=34088, name="EXXON MOBIL CORP")
+    assert CompanyFacts(new).annual("Revenues") == {}
+    merged = CompanyFacts(merge_facts(new, old))
+    assert merged.cik == 2115436
+    assert merged.annual("Revenues")[2025].accn == "accn-old-fy25"
+    assert len(merged.series("Revenues", "USD")) == 2  # the shared 10-Q fact is not duplicated
