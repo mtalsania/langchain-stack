@@ -11,7 +11,8 @@ Evaluators (plain code, no LLM judge needed when ground truth is exact):
     python -m evals.xbrl_qa --local         # print a score table, no LangSmith needed
     python -m evals.xbrl_qa                 # create/refresh the LangSmith dataset and run an experiment
 
-Done-when for M1: numeric_match >= 0.90 on the 20 questions.
+Done-when for M1: numeric_match >= 0.90 on the ~20 questions (a company missing a
+metric in XBRL simply has one question fewer).
 Free-tier cost: ~2 small-model calls per question, ~40 calls and ~60K tokens on Groq's
 small model, which has its own daily quota.
 """
@@ -21,6 +22,7 @@ import argparse
 import os
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from pydantic import BaseModel, Field
 
 from common.llm import get_llm
@@ -68,7 +70,9 @@ def make_agent():
         model=get_llm(small=True),
         tools=[get_metric, list_fiscal_years],
         system_prompt=SYSTEM,
-        response_format=NumericAnswer,
+        # ToolStrategy: the final answer is returned as a tool call. The default for a bare
+        # schema uses the provider's JSON mode, and Groq rejects JSON mode combined with tools.
+        response_format=ToolStrategy(NumericAnswer),
     )
 
 

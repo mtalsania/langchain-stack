@@ -159,3 +159,22 @@ def test_bullets_that_are_only_numbers_are_flagged(monkeypatch):
                             drivers=[], risks=[], priorities=[]).model_dump()
     out = cr.render({"snapshot": snap, "draft": draft, "sources": [{"id": "S1", "item": "7", "section": "MD&A", "filing_date": "2024-11-01", "url": "u"}], "issues": []})
     assert out["issues"] == ["financial story bullet has no explanation: '{{revenue:2024}}'"]
+
+
+def test_eval_agent_never_sends_json_mode_with_tools(monkeypatch):
+    """Groq returns 400 'json mode cannot be combined with tool/function calling'."""
+    from langchain_groq import ChatGroq
+
+    sent = []
+    model = ChatGroq(model="openai/gpt-oss-20b", api_key="test")
+
+    def capture(**params):
+        sent.append(params)
+        raise RuntimeError("stop before the network")
+
+    model.client.create = capture
+    monkeypatch.setattr(xbrl_qa, "get_llm", lambda small=False: model)
+    with pytest.raises(RuntimeError):
+        xbrl_qa.make_agent().invoke({"messages": [("user", "AAPL revenue FY2024?")]})
+    assert "response_format" not in sent[0]
+    assert "NumericAnswer" in [t["function"]["name"] for t in sent[0]["tools"]]
