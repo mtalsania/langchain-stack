@@ -107,6 +107,7 @@ def test_run_in_headings_and_summary_block():
 def test_contains_quote_ignores_spacing_case_curly_quotes_and_ellipses():
     text = "We rely on third‑party  foundries. Our suppliers’ capacity is limited, and costs may rise."
     assert contains_quote(text, "our suppliers' capacity is limited")
+    assert contains_quote("tariffs and non-tariff trade barriers", "tariffs and non\u2011tariff trade barriers")
     assert contains_quote(text, "We rely on ... costs may rise.")
     assert not contains_quote(text, "capacity is unlimited")
     assert not contains_quote(text, "")
@@ -302,3 +303,9 @@ def test_failed_judge_cannot_look_perfect(fake_company, monkeypatch):
     r = rc.graph.invoke({"tickers": ["EXM"]})["reports"][0]
     assert r["counts"]["unjudged"] == 1 and any("not judged" in i and "429" in i for i in r["issues"])
     assert rf.judged_coverage(r)["score"] == 0.0
+
+
+def test_revised_with_one_empty_quote_is_treated_as_an_addition():
+    v = {"change_type": "revised", "quote_now": "new export rules apply", "quote_before": ""}
+    out = rc.check_evidence(v, "new export rules apply now", "old text", "new export rules apply now", "old text")
+    assert out["change_type"] == "added" and out["problems"] == []

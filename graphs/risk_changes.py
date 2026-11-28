@@ -192,6 +192,8 @@ def check_evidence(v: dict, now_text: str, before_text: str, now_full: str, befo
     removed: a quote from last year that is NOT anywhere in this year's Item 1A.
     """
     kind, qn, qb = v["change_type"], v["quote_now"].strip(), v["quote_before"].strip()
+    if kind == "revised" and bool(qn) != bool(qb):  # one side empty: it was really an addition or a deletion
+        kind = "added" if qn else "removed"
     if kind == "added":
         qb = ""  # a "before" quote for pure additions is filler; never show it
     if kind == "removed":
@@ -209,7 +211,7 @@ def check_evidence(v: dict, now_text: str, before_text: str, now_full: str, befo
         problems.append(f"'removed' text is still in this year's 10-K: {qb[:100]!r}")
     if kind == "revised" and qn and qn.lower() == qb.lower():
         problems.append("'revised' quotes are identical")
-    return {"quote_now": qn, "quote_before": qb, "quote_now_ok": now_ok, "quote_before_ok": before_ok,
+    return {"change_type": kind, "quote_now": qn, "quote_before": qb, "quote_now_ok": now_ok, "quote_before_ok": before_ok,
             "problems": problems}
 
 

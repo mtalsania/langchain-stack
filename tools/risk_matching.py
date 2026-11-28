@@ -34,8 +34,11 @@ MIN_CHANGED_WORDS = 4  # fewer changed words than this (or only numbers) = uncha
 MAX_HUNKS = 6
 MAX_HUNK_CHARS = 450  # per side; keeps judge prompts inside the free-tier token budget
 
-_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-",
-                         "­": None, " ": " "})
+# Typographic variants that mean the same text. gpt-oss often writes U+2011 (non-breaking
+# hyphen) where the filing has a plain "-", which used to fail the verbatim check.
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                         **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+                         "\u00ad": None, "\u00a0": " ", "\u202f": " ", "\u2009": " "})
 _WORD = re.compile(r"\S+")
 _NUMERIC = re.compile(r"^[\W\d]*\d[\W\d]*$|^(fiscal|january|february|march|april|may|june|july|august|september|"
                       r"october|november|december)\W*$", re.I)
