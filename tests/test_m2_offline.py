@@ -285,7 +285,7 @@ def test_eval_scores_evidence_against_the_filings(monkeypatch):
         {"heading_now": "Exports", "change_type": "revised", "quote_now": "Export rules have limited sales to China",
          "quote_before": "Export rules may limit sales to China"},
         {"heading_now": "AI", "change_type": "added", "quote_now": "We added a new AI risk", "quote_before": ""},
-        {"heading_now": "Fake", "change_type": "added", "quote_now": "Export rules may limit sales", "quote_before": ""},
+        {"heading_now": "Fake", "change_type": "added", "quote_now": "sales to China", "quote_before": ""},
     ]}
     assert rf.quotes_verbatim(out)["score"] == 1.0
     ev = rf.evidence_fits_change(out)
