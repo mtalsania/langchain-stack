@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    env:
+      # Live SEC tests run only when the repo has an SEC_USER_AGENT secret
+      # (Settings > Secrets and variables > Actions), e.g. "Your Name you@yourdomain.com".
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4 lxml python-dotenv pytest
+      - name: Offline tests
+        run: pytest
+      - uses: actions/cache@v4
+        if: ${{ env.SEC_USER_AGENT != '' }}
+        with:
+          path: .cache/sec
+          key: sec-${{ github.run_id }}
+          restore-keys: sec-
+      - name: Live SEC tests
+        if: ${{ env.SEC_USER_AGENT != '' }}
+        run: pytest --live -v && python -m core.demo NVDA --sections
