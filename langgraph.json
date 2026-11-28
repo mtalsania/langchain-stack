@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "company_research": "./graphs/company_research.py:graph"
+  },
+  "env": ".env",
+  "python_version": "3.12"
+}

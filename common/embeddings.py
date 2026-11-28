@@ -6,6 +6,7 @@ No API key and no rate limit, so retrieval never costs you free-tier quota.
 This is also a good look at how small LangChain's Embeddings interface is:
 you only need embed_documents() and embed_query().
 """
+import os
 from functools import lru_cache
 
 from langchain_core.embeddings import Embeddings
@@ -17,7 +18,8 @@ class LocalEmbeddings(Embeddings):
     def __init__(self, model_name: str = MODEL_NAME):
         from fastembed import TextEmbedding
 
-        self._model = TextEmbedding(model_name)
+        # FASTEMBED_CACHE_PATH (if set) keeps the ~130MB model somewhere persistent.
+        self._model = TextEmbedding(model_name, cache_dir=os.getenv("FASTEMBED_CACHE_PATH"))
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [vec.tolist() for vec in self._model.embed(texts)]
