@@ -1,0 +1,51 @@
+name: m2-live
+
+# Year-over-year risk factor changes for 5 companies, scored by the faithfulness eval.
+# Manual only (Actions tab > m2-live > Run workflow), so it never burns free-tier quota
+# by accident. Needs repo secrets SEC_USER_AGENT and GROQ_API_KEY; LANGSMITH_API_KEY is
+# optional (without it the eval scores locally). The 5 reports are uploaded as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: Tickers, space separated
+        default: NVDA AAPL MSFT AMZN GOOGL
+      judge:
+        description: Also run the LLM summary_supported check (more tokens)
+        type: boolean
+        default: false
+
+jobs:
+  risk-changes:
+    runs-on: ubuntu-latest
+    env:
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' }}
+      LANGSMITH_PROJECT: watchlist-agent
+      FASTEMBED_CACHE_PATH: .cache/fastembed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4 lxml python-dotenv langchain langchain-core langchain-text-splitters langgraph langchain-groq langsmith fastembed numpy
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: m2-${{ github.run_id }}
+          restore-keys: |
+            m2-
+            sec-
+      - name: Risk changes + faithfulness eval
+        run: |
+          FLAGS="--out reports"
+          if [ "${{ inputs.judge }}" = "true" ]; then FLAGS="$FLAGS --judge"; fi
+          if [ -z "$LANGSMITH_API_KEY" ]; then FLAGS="$FLAGS --local"; fi
+          python -m evals.risk_faithfulness ${{ inputs.tickers }} $FLAGS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: risk-reports
+          path: reports/
