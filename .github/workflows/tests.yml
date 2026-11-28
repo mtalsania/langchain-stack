@@ -37,5 +37,4 @@ jobs:
         env:
           FASTEMBED_CACHE_PATH: .cache/fastembed
         run: |
-          python -m scripts.risk_diagnostics NVDA AAPL MSFT AMZN GOOGL
           python -m graphs.risk_changes NVDA AAPL MSFT AMZN GOOGL --no-llm || true
